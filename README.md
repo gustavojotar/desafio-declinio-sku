@@ -1,38 +1,45 @@
-# Case Declínio de SKU - Grupo Boticário
 
-## Objetivo
+```markdown
+# Desafio Declínio de SKU 
 
-Consolidar uma solução técnica estruturada e reproduzível para o **gerenciamento inteligente do ciclo de vida de produtos** do Grupo Boticário.
+## Visão Geral
 
-O projeto abrange três frentes:
+Solução preditiva para o **gerenciamento inteligente do ciclo de vida de produtos** do Grupo Boticário, capaz de identificar SKUs em risco de declínio e recomendar ações proativas de proteção de margem.
 
-### 1. Diagnóstico de Negócio
-Análise exploratória (EDA) que identifica padrões históricos — comportamento de vendas, rupturas e expansão de pontos de venda — que antecedem a fase de declínio.
+O projeto responde a duas perguntas de negócio:
+1. **Este SKU vai entrar em declínio nos próximos 25 ciclos?** (probabilidade)
+2. **Em qual ciclo isso vai acontecer?** (timing para ação)
 
-### 2. Modelagem Preditiva (Análise de Sobrevivência)
-Modelo **Gradient Boosting Survival** capaz de prever se um SKU entrará em declínio e em qual ciclo isso ocorrerá, dentro de um horizonte de **25 ciclos**.
+---
 
-### 3. Ação Proativa (Proteção de Margem)
-Ferramenta para que o time de negócios possa ajustar preços ou interromper a produção antecipadamente, evitando descontos agressivos que prejudicam a margem financeira.
+## Resultados Principais
+
+| Métrica | Valor |
+|---------|-------|
+| Modelo | Gradient Boosting Survival |
+| C-Index Treino | 0.7512 |
+| C-Index Teste | 0.7512 |
+| Overfitting | Zero (gap = 0) |
+| Horizonte | 25 ciclos (~16 meses) |
 
 ---
 
 ## Estrutura do Repositório
 
 ```
-declinio_sku/
-├── data/                        # Dados (adicionar manualmente)
+desafio-declinio-sku/
+├── data/                        # Dados (não versionados)
 │   └── base-de-dados.csv
 ├── notebooks/
-│   ├── 01_analise_exploratoria.ipynb          # EDA completa
-│   ├── 02_modelo_gradient_boosting_survival.ipynb  # GBS - Evento: Declínio Estrutural
-│   ├── 03_modelo_gbs_ativo_inativo.ipynb      # GBS - Evento: Ativo → Inativo
-│   └── 04_modelo_gbs_evento_picos.ipynb       # GBS - Evento: Distância do Pico (v3)
+│   ├── 01_analise_exploratoria.ipynb          # Diagnóstico de negócio
+│   ├── 02_modelo_gradient_boosting_survival.ipynb  # Modelo: evento declínio estrutural
+│   ├── 03_modelo_gbs_ativo_inativo.ipynb      # Modelo: evento ativo → inativo
+│   ├── 04_modelo_gbs_evento_picos.ipynb       # Modelo final + proteção de margem + ROI
+│   └── 05_comparacao_modelos.ipynb            # Comparação: Cox PH vs RSF vs GBS
 ├── src/
-│   └── modelagem_preditiva.py   # Pipeline auxiliar
-├── models/                      # Modelos serializados
-├── reports/
-│   └── figures/                 # Gráficos gerados
+│   └── modelagem_preditiva.py
+├── models/
+├── reports/figures/
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -40,115 +47,142 @@ declinio_sku/
 
 ---
 
-## Notebooks
+## Abordagem
 
-### 01 - Análise Exploratória
-- Visão geral, estatísticas descritivas, valores ausentes
-- Distribuições, correlações, análise temporal
-- Comparação Ativos vs Inativos (vendas, ruptura, PDVs)
-- Análise de distância do pico e tempo desde o pico
-- Análise de evento (repacking)
+### 1. Diagnóstico de Negócio (Notebook 01)
 
-### 02 - GBS: Declínio Estrutural
-- **Evento:** Expansão fraca de PDVs + retração da base por 5 ciclos
-- Modelo: Gradient Boosting Survival Analysis
-- Previsão condicional: P(T < t+25 | T > t)
+Análise exploratória que identificou os padrões que antecedem o declínio:
 
-### 03 - GBS: Ativo → Inativo
-- **Evento:** `des_status_atual_agrup == "Inativo"`
-- Mesmo pipeline do notebook 02
+- **Capilaridade:** Perda de PDVs novos é o sinal mais precoce (até 80 ciclos antes)
+- **Vendas:** Receita cruza o baseline ~10 ciclos antes do fim (ponto sem retorno)
+- **Ruptura:** Colapso logístico nos últimos 30 ciclos (produção descontinuada antes da desativação oficial)
+- **Ticket Médio:** Sobe no final — indica abandono de lojas, não de público fiel
+- **Marketing:** Estatisticamente irrelevante para diferenciar Ativos de Inativos (Kruskal-Wallis p = 0.45)
 
-### 04 - GBS: Distância do Pico (Versão Final)
-- **Evento:** Receita < 20% do pico + >=15 ciclos sem renovar pico + PDVs caindo
-- **Confirmação:** 4 ciclos consecutivos
-- **Features (~30):** Slopes, médias, pico, aceleração, médias móveis, lags, ruptura, idade
-- **C-Index:** 0.75 treino / 0.75 teste (zero overfitting)
-- **Previsão:** P(declinar nos próximos 25 ciclos | vivo hoje) = 1 - S(t+25)/S(t)
-- **Proteção de Margem:** Política de preços baseada no output do modelo
-- **Simulação de ROI:** Cenários conservador, realista e otimista
+### 2. Modelagem Preditiva (Notebooks 02-05)
 
----
+**Modelo escolhido:** Gradient Boosting Survival Analysis (scikit-survival)
 
-## Metodologia
+**Por que Análise de Sobrevivência?**
+- Responde **SE** e **QUANDO** (não apenas sim/não)
+- Lida com **censura** (produtos ativos que ainda não declinaram)
+- Gera uma **curva de probabilidade** ao longo do tempo
+- Previsão **condicional**: dado que o produto está vivo hoje, qual a chance de declinar nos próximos 25 ciclos?
 
-### Definição do Evento de Declínio (v3)
+**Definição do Evento de Declínio:**
 ```
-sinal_declinio = (
-    receita < 20% do pico histórico     AND
-    >= 15 ciclos sem renovar o pico      AND
-    base de PDVs caindo (diff < 0)
-)
-evento = sinal confirmado por 4 ciclos consecutivos
+Um SKU entra em declínio quando simultaneamente:
+  1. Receita cai abaixo de 20% do pico histórico
+  2. Não renova o pico há 15+ ciclos
+  3. Base de PDVs está encolhendo (diff < 0)
+  4. Esses sinais persistem por pelo menos 4 ciclos consecutivos
 ```
 
-### Features do Modelo
-- **Capilaridade:** `ind_cpfs_novos`, `ind_cpfs_total` (médias + slopes)
-- **Vendas:** `ind_vlr_receita_real_dia_corrigido`, `ind_vlr_receita_real_corrigido`
-- **Velocidade:** Slopes últimos 5 e 10 ciclos
-- **Aceleração:** slope_ult5 - slope_ult10
-- **Pico:** `pct_pico_atual`, `ciclos_desde_pico_atual`
-- **Ticket Médio:** Receita/PDV (média + slope)
-- **Ruptura:** Proporção global e últimos 10 ciclos
-- **Médias Móveis:** MM3 e MM5 das variáveis-chave
-- **Lags:** Último valor observado
-- **Idade:** Ciclos desde o lançamento (phase_in)
-
-### Previsão Condicional
+**Previsão Condicional:**
 ```
 P(declinar nos próximos 25 ciclos | vivo hoje) = 1 - S(t+25) / S(t)
 ```
-Onde S(t) é a função de sobrevivência estimada pelo Gradient Boosting Survival.
 
-### Proteção de Margem
-| Probabilidade (modelo) | Ação recomendada |
-|------------------------|------------------|
-| > 50% + ciclo < 5 | URGENTE: Phase-out imediato |
-| > 50% | ALTO: Redução 10-15% + suspender produção |
-| 30-50% | MÉDIO: Sem novos lotes, sem repacking |
+**Features selecionadas (~30):**
+
+| Pilar | Features | Justificativa |
+|-------|----------|---------------|
+| Capilaridade | PDVs novos, PDVs total (média + slope) | Sinal mais precoce (H = 13.470 e 16.547) |
+| Vendas | Receita diária corrigida (média + slope) | Maior poder discriminativo (H = 21.354) |
+| Velocidade | Slopes últimos 5 e 10 ciclos | Velocidade da mudança > valor absoluto |
+| Aceleração | slope_ult5 - slope_ult10 | Detecta se a queda está se intensificando |
+| Distância do pico | % do pico atual, ciclos desde o pico | Critério direto de obsolescência |
+| Ticket Médio | Receita/PDV (média + slope) | Sobe no final = declínio escondido |
+| Ruptura | Proporção global e últimos 10 ciclos | Colapso logístico |
+| Médias Móveis | MM3 e MM5 | Suaviza ruído sazonal |
+| Lags | Último valor observado | Padrão recente |
+| Idade | Ciclos desde o lançamento | Maturidade como fator de risco |
+
+**Comparação de Modelos (Notebook 05):**
+
+| Modelo | Tipo | Uso |
+|--------|------|-----|
+| Cox PH | Linear | Baseline interpretável |
+| Random Survival Forest | Bagging | Robustez sem tuning |
+| Gradient Boosting Survival | Boosting | Melhor performance |
+
+### 3. Ação Proativa (Notebook 04, Seções 14-16)
+
+**Proteção de Margem — Política de preços baseada no modelo:**
+
+| Probabilidade | Ação |
+|---------------|------|
+| > 50% + ciclo < 5 | URGENTE: Phase-out imediato, vender estoque a preço cheio |
+| > 50% | ALTO: Redução gradual 10-15%, suspender produção |
+| 30-50% | MÉDIO: Sem novos lotes, sem repacking, reavaliar em 5 ciclos |
 | < 30% | BAIXO: Manter preço e investimento |
 
+**Simulação de ROI — Proteção de Margem:**
+
+| Cenário | Desconto SEM modelo | Desconto COM modelo | Margem salva |
+|---------|:-------------------:|:-------------------:|:------------:|
+| Conservador | 30% | 10% | +20 p.p. |
+| Realista | 45% | 10% | +35 p.p. |
+| Otimista | 55% | 5% | +50 p.p. |
+
+**ROI de Realocação de Marketing:**
+
+O modelo identifica SKUs condenados que ainda recebem investimento em marketing (comprovadamente ineficaz para produtos em declínio). A verba é redirecionada para categorias com maior sobrevivência.
+
+| Cenário | % Realocada | ROI no destino |
+|---------|:-----------:|:--------------:|
+| Conservador | 50% | 1.5x |
+| Realista | 70% | 2.5x |
+| Otimista | 90% | 4.0x |
+
 ---
 
-## Resultados
-
-| Métrica | Valor |
-|---------|-------|
-| C-Index Treino | 0.7512 |
-| C-Index Teste | 0.7512 |
-| Gap (overfitting) | 0.0000 |
-| Horizonte | 25 ciclos |
-
----
-
-## Instalação e Uso
+## Como Executar
 
 ### Pré-requisitos
 - Python 3.9+
 - Google Colab (recomendado)
 
-### Setup Local
+### Google Colab (recomendado)
+1. Abrir o notebook desejado no Colab
+2. Na primeira célula, o Google Drive será montado automaticamente
+3. Ajustar o caminho do CSV: `/content/drive/MyDrive/Case SKU/data/base-de-dados.csv`
+4. Executar todas as células em sequência
 
+### Local
 ```bash
-git clone https://github.com/gustavojotar/declinio_sku.git
-cd declinio_sku
+git clone https://github.com/gustavojotar/desafio-declinio-sku.git
+cd desafio-declinio-sku
 pip install -r requirements.txt
 ```
-
-### Google Colab
-1. Abrir o notebook desejado no Colab
-2. Montar o Google Drive
-3. Ajustar o caminho do arquivo CSV em: `/content/drive/MyDrive/Case SKU/data/base-de-dados.csv`
 
 ---
 
 ## Stack Tecnológica
 
-- **Linguagem:** Python 3.9+
-- **Manipulação:** pandas, numpy, scipy
-- **Visualização:** matplotlib, seaborn
-- **Modelagem:** scikit-survival (Gradient Boosting Survival)
-- **Pré-processamento:** scikit-learn (StandardScaler, train_test_split)
-- **Ambiente:** Google Colab
+| Componente | Ferramenta |
+|------------|-----------|
+| Linguagem | Python 3.9+ |
+| Manipulação | pandas, numpy, scipy |
+| Visualização | matplotlib, seaborn |
+| Modelagem | scikit-survival (Gradient Boosting Survival) |
+| Pré-processamento | scikit-learn |
+| Ambiente | Google Colab |
+
+---
+
+## Resumo Executivo
+
+O declínio de um SKU **não é um evento súbito** — ele segue um padrão previsível:
+
+| Fase | Ciclos antes do fim | Sinal |
+|------|:-------------------:|-------|
+| Alerta precoce | -80 a -60 | PDVs novos desaparecem |
+| Estagnação | -60 a -15 | Receita para de crescer, base PDVs encolhe |
+| Ponto sem retorno | -15 a -10 | Receita cruza 20% do pico |
+| Queda acelerada | -10 a 0 | Todos indicadores despencam |
+
+**Janela de ação proativa:** entre ciclo -15 e -10 (antes do ponto sem retorno, quando ainda é possível descontinuar sem descontos agressivos).
 
 ---
 
@@ -156,8 +190,6 @@ pip install -r requirements.txt
 
 **Gustavo** — [@gustavojotar](https://github.com/gustavojotar)
 
----
 
-## Licença
+```
 
-Este projeto é de uso público para fins educacionais e profissionais.
